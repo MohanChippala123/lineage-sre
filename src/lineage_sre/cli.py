@@ -98,11 +98,23 @@ def diagnose(
     model: str = typer.Option(None, "--model", help="Failing model to diagnose (default: first failure found)."),
     apply: bool = typer.Option(False, "--apply", help="Allow the agent to apply the verified fix to the warehouse."),
     mcp: bool = typer.Option(False, "--mcp", help="Read DataHub via the official DataHub MCP Server."),
+    engine: str = typer.Option(
+        "auto", "--engine",
+        help="'gemini' = Gemini free tier (GEMINI_API_KEY); 'api' = Anthropic API "
+        "(ANTHROPIC_API_KEY); 'sdk' = Claude Agent SDK on a Claude subscription (no key); "
+        "'auto' = first configured of gemini/api/sdk.",
+    ),
 ):
     """Run the Lineage SRE agent on a failing model."""
     settings = get_settings()
-    if not settings.anthropic_api_key:
-        console.print("[red]ANTHROPIC_API_KEY is not set.[/red] Copy .env.example to .env and fill it in.")
+    if engine == "api" and not settings.anthropic_api_key:
+        console.print("[red]--engine api requires ANTHROPIC_API_KEY in .env.[/red]")
+        raise typer.Exit(1)
+    if engine == "gemini" and not settings.gemini_api_key:
+        console.print(
+            "[red]--engine gemini requires GEMINI_API_KEY in .env.[/red] "
+            "Free key: https://aistudio.google.com/apikey"
+        )
         raise typer.Exit(1)
     if not _check_datahub(settings):
         raise typer.Exit(1)
@@ -128,7 +140,9 @@ def diagnose(
     from .agent import run_diagnosis
 
     report, report_path = asyncio.run(
-        run_diagnosis(settings, model, error_text, allow_apply=apply, use_mcp=mcp, console=console)
+        run_diagnosis(
+            settings, model, error_text, allow_apply=apply, use_mcp=mcp, engine=engine, console=console
+        )
     )
     console.print()
     console.print(Markdown(report or "(no report)"))
@@ -138,6 +152,7 @@ def diagnose(
 @app.command()
 def demo(
     mcp: bool = typer.Option(False, "--mcp", help="Read DataHub via the official DataHub MCP Server."),
+    engine: str = typer.Option("auto", "--engine", help="Agent backend: sdk, api, or auto."),
 ):
     """Full demo: seed -> break -> check -> diagnose --apply."""
     settings = get_settings()
@@ -153,7 +168,7 @@ def demo(
     console.rule("3/4 Health check")
     _print_health(health_check(settings.warehouse_path, MODELS))
     console.rule("4/4 Diagnose")
-    diagnose(model=None, apply=True, mcp=mcp)
+    diagnose(model=None, apply=True, mcp=mcp, engine=engine)
 
 
 if __name__ == "__main__":

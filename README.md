@@ -66,19 +66,29 @@ Write-back (incidents via `raiseIncident`, postmortems via `updateDescription`) 
 
 ## Quickstart
 
-Prereqs: [uv](https://docs.astral.sh/uv/), Docker, an Anthropic API key.
+Prereqs: [uv](https://docs.astral.sh/uv/) and a DataHub instance — either of:
+
+- **DataHub Cloud free trial** (no Docker): sign up at [datahub.com/free-trial](https://datahub.com/free-trial/),
+  generate a personal access token (Settings → Access Tokens), and set `DATAHUB_GMS_URL=https://<org>.acryl.io/gms`
+  and `DATAHUB_TOKEN` in `.env`.
+- **Local quickstart** (Docker): `uv tool install acryl-datahub && datahub docker quickstart`,
+  then the default `DATAHUB_GMS_URL=http://localhost:8080` just works.
+
+The agent runs on any of three backends (`--engine gemini|api|sdk`, auto-detected from `.env`):
+
+| Engine | Needs | Cost |
+|---|---|---|
+| `gemini` | `GEMINI_API_KEY` ([free, no card](https://aistudio.google.com/apikey)) | free tier |
+| `api` | `ANTHROPIC_API_KEY` | pay per token |
+| `sdk` | a [Claude Code](https://claude.com/claude-code) login, no key | your Claude subscription |
 
 ```bash
-# 1. Run DataHub locally (one-time, ~5 min)
-uv tool install acryl-datahub
-datahub docker quickstart
-
-# 2. Install
+# Install
 git clone <this repo> && cd lineage-sre
 uv sync                    # add: --extra mcp  for MCP mode
-cp .env.example .env       # put your ANTHROPIC_API_KEY in .env
+cp .env.example .env       # point it at your DataHub instance
 
-# 3. Run the whole story end-to-end
+# Run the whole story end-to-end
 uv run lineage-sre demo
 ```
 

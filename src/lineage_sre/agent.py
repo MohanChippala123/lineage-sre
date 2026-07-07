@@ -1,11 +1,18 @@
-"""The Lineage SRE agent: a Claude tool-use loop over DataHub context + warehouse actions."""
+"""The Lineage SRE agent: a Claude tool-use loop over DataHub context + warehouse actions.
+
+Three interchangeable backends:
+- "gemini" — Google Gemini free tier (GEMINI_API_KEY, no cost, no card)
+- "api"    — Anthropic API directly (requires ANTHROPIC_API_KEY)
+- "sdk"    — Claude Agent SDK, runs on a Claude Code subscription (no API key)
+
+"auto" picks the first configured of: gemini, api, sdk.
+"""
 
 from __future__ import annotations
 
 import json
 from datetime import datetime
 
-from anthropic import AsyncAnthropic
 from rich.console import Console
 
 from .config import Settings
@@ -60,33 +67,30 @@ Your FINAL message must be a complete markdown RCA report with exactly these sec
 """
 
 
-async def run_diagnosis(
-    settings: Settings,
-    failing_model: str,
-    error_text: str,
-    allow_apply: bool = False,
-    use_mcp: bool = False,
-    console: Console | None = None,
-) -> tuple[str, str]:
-    """Run the agent loop. Returns (report_markdown, report_path)."""
-    console = console or Console()
-    client = DataHubClient(settings.gms_url, settings.datahub_token)
-    toolbox = ToolBox(settings, client, allow_apply=allow_apply)
-
-    mcp_bridge = None
-    if use_mcp:
-        from .mcp_bridge import DataHubMCPBridge
-
-        mcp_bridge = DataHubMCPBridge(settings.gms_url, settings.datahub_token)
-
-    failing_urn = dataset_urn_for(failing_model)
-    initial_message = (
+def build_initial_message(failing_model: str, failing_urn: str, error_text: str, allow_apply: bool) -> str:
+    return (
         f"INCIDENT: pipeline health check failed.\n"
         f"- Failing asset: {failing_model} (DataHub URN: {failing_urn})\n"
         f"- Error:\n{error_text}\n\n"
         f"Applying fixes to the warehouse is {'ALLOWED' if allow_apply else 'NOT allowed (propose only)'} in this run.\n"
         f"Diagnose the root cause, fix it, and write the knowledge back to DataHub."
     )
+
+
+async def _run_api_loop(
+    settings: Settings,
+    toolbox: ToolBox,
+    initial_message: str,
+    use_mcp: bool,
+    console: Console,
+) -> str:
+    from anthropic import AsyncAnthropic
+
+    mcp_bridge = None
+    if use_mcp:
+        from .mcp_bridge import DataHubMCPBridge
+
+        mcp_bridge = DataHubMCPBridge(settings.gms_url, settings.datahub_token)
 
     anthropic = AsyncAnthropic(api_key=settings.anthropic_api_key)
     messages: list[dict] = [{"role": "user", "content": initial_message}]
@@ -136,9 +140,54 @@ async def run_diagnosis(
 
     if mcp_bridge is not None:
         async with mcp_bridge:
-            report = await loop()
+            return await loop()
+    return await loop()
+
+
+async def run_diagnosis(
+    settings: Settings,
+    failing_model: str,
+    error_text: str,
+    allow_apply: bool = False,
+    use_mcp: bool = False,
+    engine: str = "auto",
+    console: Console | None = None,
+) -> tuple[str, str]:
+    """Run the agent loop. Returns (report_markdown, report_path)."""
+    console = console or Console()
+    if engine == "auto":
+        if settings.gemini_api_key:
+            engine = "gemini"
+        elif settings.anthropic_api_key:
+            engine = "api"
+        else:
+            engine = "sdk"
+
+    client = DataHubClient(settings.gms_url, settings.datahub_token)
+    toolbox = ToolBox(settings, client, allow_apply=allow_apply)
+    initial_message = build_initial_message(
+        failing_model, dataset_urn_for(failing_model), error_text, allow_apply
+    )
+
+    if engine == "gemini":
+        from .agent_gemini import run_diagnosis_gemini
+
+        console.print(f"  [dim]engine: Gemini free tier ({settings.gemini_model})[/dim]")
+        report = await run_diagnosis_gemini(
+            settings, toolbox, SYSTEM_PROMPT, initial_message, use_mcp=use_mcp, console=console
+        )
+    elif engine == "sdk":
+        from .agent_sdk import run_diagnosis_sdk
+
+        console.print("  [dim]engine: Claude Agent SDK (subscription — no API key needed)[/dim]")
+        report = await run_diagnosis_sdk(
+            settings, toolbox, SYSTEM_PROMPT, initial_message, use_mcp=use_mcp, console=console
+        )
+    elif engine == "api":
+        console.print("  [dim]engine: Anthropic API[/dim]")
+        report = await _run_api_loop(settings, toolbox, initial_message, use_mcp, console)
     else:
-        report = await loop()
+        raise ValueError(f"unknown engine: {engine!r} (expected gemini, sdk, api, or auto)")
 
     settings.reports_dir.mkdir(parents=True, exist_ok=True)
     report_path = settings.reports_dir / f"rca_{datetime.now():%Y%m%d_%H%M%S}.md"
